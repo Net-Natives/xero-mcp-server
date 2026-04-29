@@ -36,7 +36,7 @@ NOTE: To use Payroll-specific queries, the region should be either NZ or UK.
 
 ### Authentication
 
-There are 2 modes of authentication supported in the Xero MCP server:
+There are 3 modes of authentication supported in the Xero MCP server:
 
 #### 1. Custom Connections
 
@@ -84,7 +84,57 @@ The `XERO_SCOPES` variable is optional. If omitted, the default scopes listed ab
 
 NOTE: If you are using [Node Version Manager](https://github.com/nvm-sh/nvm) `"command": "npx"` section change it to be the full path to the executable, ie: `your_home_directory/.nvm/versions/node/v22.14.0/bin/npx` on Mac / Linux or `"your_home_directory\\.nvm\\versions\\node\\v22.14.0\\bin\\npx"` on Windows
 
-#### 2. Bearer Token
+#### 2. PKCE (Authorization Code with PKCE)
+
+This is suited for desktop / CLI use where you want to authenticate against your own Xero organisation interactively. On first run the server will open a browser to Xero's authorization endpoint, listen for the redirect on `localhost`, exchange the code for tokens, persist them to disk, and refresh them automatically before they expire.
+
+##### Configuring your Xero Developer account
+
+Create a standard Xero OAuth 2.0 app at https://developer.xero.com/app/manage and register `http://localhost:8765/callback` as a redirect URI. If port 8765 is unavailable on your machine the server iterates upwards through 8770. To allow the fallback, register each port (`http://localhost:8766/callback` … `http://localhost:8770/callback`) in the Xero app, or set `XERO_REDIRECT_URI` / `XERO_OAUTH_PORT_START` to pin a specific port.
+
+> Note: ports in the 5000–5001 range are commonly taken on macOS by Control Center / AirPlay Receiver, which is why this server defaults to 8765+.
+
+##### Configuration
+
+```json
+{
+  "mcpServers": {
+    "xero": {
+      "command": "npx",
+      "args": ["-y", "@xeroapi/xero-mcp-server@latest"],
+      "env": {
+        "XERO_AUTH_MODE": "pkce",
+        "XERO_CLIENT_ID": "your_client_id_here",
+        "XERO_CLIENT_SECRET": "your_client_secret_here"
+      }
+    }
+  }
+}
+```
+
+Optional environment variables:
+
+- `XERO_SCOPES` — space-separated list of OAuth scopes. Defaults include `offline_access` (required to issue a refresh token) plus the standard accounting / payroll scopes.
+- `XERO_TOKEN_FILE` — where to persist the token set. Defaults to `~/.xero-mcp-server/tokens.json` (file mode `0600`).
+- `XERO_REDIRECT_URI` — pin the redirect URI to a specific value. When set, port discovery is skipped.
+- `XERO_OAUTH_PORT_START` — port to start listening on for the callback. Defaults to `8765` (range 8765–8770).
+- `XERO_TOKEN_AUTH_METHOD` — how to authenticate at the token endpoint. Defaults to `post` (sends `client_secret` in the form body, which Xero requires). Set to `basic` to use HTTP Basic auth instead.
+- `XERO_PKCE_DEBUG` — set to `true` to enable verbose debug logging including HTTP request/response bodies (with secrets redacted). Off by default.
+- `XERO_PKCE_LOG_FILE` — path for the PKCE log file. Defaults to `~/.xero-mcp-server/pkce.log`.
+
+To force a re-login, delete the token file.
+
+##### Troubleshooting
+
+The server writes a log to `~/.xero-mcp-server/pkce.log` (override with `XERO_PKCE_LOG_FILE`). For verbose output during diagnosis, run with `XERO_PKCE_DEBUG=true`.
+
+Common gotchas:
+
+- **`Invalid redirect_uri` from Xero** — the registered URI must be a *byte-for-byte* match. Watch for missing `/callback` paths, trailing slashes, or `http` vs `https`.
+- **`OAUTH_RESPONSE_IS_NOT_JSON` / 403 HTML response from `/connect/token`** — typically a redirect-URI mismatch between the authorization request and the token-endpoint exchange. The server normalizes the callback URL host (e.g. `127.0.0.1` → `localhost`) to match what was registered, so register the URI exactly as `http://localhost:8765/callback`.
+- **macOS port 5000 / 7000 conflicts** — taken by Control Center / AirPlay Receiver, which is why this server defaults to 8765+.
+
+#### 3. Bearer Token
 
 This is a better choice if you are to support multiple Xero accounts at runtime and allow the MCP client to execute an auth flow (such as PKCE) as required.
 In this case, use the following configuration:
