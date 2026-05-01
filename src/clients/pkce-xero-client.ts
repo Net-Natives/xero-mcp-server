@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, promises as fs } from "node:fs";
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { AddressInfo } from "node:net";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { createServer as createHttpsServer, ServerOptions } from "node:https";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { createServer as createNetServer, AddressInfo } from "node:net";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -9,15 +10,12 @@ import * as oidc from "openid-client";
 
 import { ensureError } from "../helpers/ensure-error.js";
 import { MCPXeroClient } from "./mcp-xero-client.js";
-
-interface PersistedTokens {
-  access_token: string;
-  refresh_token?: string;
-  id_token?: string;
-  token_type: string;
-  scope?: string;
-  expires_at?: number;
-}
+import { ensureLocalhostTLS, TLSMaterials } from "./pkce-cert.js";
+import {
+  PersistedTokens,
+  selectTokenStore,
+  TokenStore,
+} from "./pkce-token-store.js";
 
 const ISSUER_URL = new URL("https://identity.xero.com");
 const CALLBACK_PATH = "/callback";
@@ -45,10 +43,6 @@ const DEFAULT_SCOPES = [
   "payroll.employees",
   "payroll.timesheets",
 ].join(" ");
-
-function defaultTokenPath(): string {
-  return join(homedir(), ".xero-mcp-server", "tokens.json");
-}
 
 function defaultLogPath(): string {
   return process.env.XERO_PKCE_LOG_FILE
@@ -122,6 +116,12 @@ function logError(message: string, err?: unknown): void {
   logLine("error", parts.join(" "));
 }
 
+const tokenStoreLogger = {
+  info: logInfo,
+  warn: logWarn,
+  debug: logDebug,
+};
+
 function sanitizeBody(body: string): string {
   return body
     .replace(/(client_secret=)[^&]+/gi, "$1<redacted>")
@@ -158,7 +158,6 @@ const loggingFetch: oidc.CustomFetch = async (url, options) => {
   }
   const truncated =
     bodyText.length > 600 ? bodyText.slice(0, 600) + "...[truncated]" : bodyText;
-  // Always log non-2xx responses; otherwise debug-only.
   if (response.status >= 400) {
     logError(
       `HTTP ${response.status} ${url} content-type=${contentType} body=${truncated}`,
@@ -192,7 +191,7 @@ function openBrowser(url: string): void {
 async function findOpenPort(start: number, range: number): Promise<number> {
   for (let port = start; port < start + range; port++) {
     const free = await new Promise<boolean>((resolve) => {
-      const probe = createServer();
+      const probe = createNetServer();
       probe.unref();
       probe.once("error", () => resolve(false));
       probe.listen(port, "127.0.0.1", () => {
@@ -214,6 +213,7 @@ interface CallbackResult {
 function waitForCallback(
   port: number,
   expectedState: string,
+  tls: TLSMaterials,
 ): Promise<CallbackResult> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -225,64 +225,72 @@ function waitForCallback(
       );
     }, AUTH_TIMEOUT_MS);
 
-    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      logDebug(`Incoming callback request: method=${req.method} url=${req.url}`);
-      if (!req.url) {
-        res.statusCode = 400;
-        res.end("Missing URL");
-        return;
-      }
-      const url = new URL(req.url, `http://127.0.0.1:${port}`);
-      if (url.pathname !== CALLBACK_PATH) {
-        logDebug(`Ignoring request to unexpected path: ${url.pathname}`);
-        res.statusCode = 404;
-        res.end("Not found");
-        return;
-      }
+    const tlsOptions: ServerOptions = {
+      cert: tls.cert,
+      key: tls.key,
+    };
 
-      const error = url.searchParams.get("error");
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      logDebug(
-        `Callback params: code=${code ? "present" : "absent"} ` +
-          `state=${state ? (state === expectedState ? "match" : "MISMATCH") : "absent"} ` +
-          `error=${error ?? "none"}`,
-      );
+    const server = createHttpsServer(
+      tlsOptions,
+      (req: IncomingMessage, res: ServerResponse) => {
+        logDebug(`Incoming callback request: method=${req.method} url=${req.url}`);
+        if (!req.url) {
+          res.statusCode = 400;
+          res.end("Missing URL");
+          return;
+        }
+        const url = new URL(req.url, `https://127.0.0.1:${port}`);
+        if (url.pathname !== CALLBACK_PATH) {
+          logDebug(`Ignoring request to unexpected path: ${url.pathname}`);
+          res.statusCode = 404;
+          res.end("Not found");
+          return;
+        }
 
-      if (error) {
-        const description = url.searchParams.get("error_description") ?? "";
-        logError(`Authorization server returned error: ${error} ${description}`);
-        res.statusCode = 400;
+        const error = url.searchParams.get("error");
+        const code = url.searchParams.get("code");
+        const state = url.searchParams.get("state");
+        logDebug(
+          `Callback params: code=${code ? "present" : "absent"} ` +
+            `state=${state ? (state === expectedState ? "match" : "MISMATCH") : "absent"} ` +
+            `error=${error ?? "none"}`,
+        );
+
+        if (error) {
+          const description = url.searchParams.get("error_description") ?? "";
+          logError(`Authorization server returned error: ${error} ${description}`);
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "text/html; charset=utf-8");
+          res.end(
+            `<html><body><h1>Authorization failed</h1><p>${error}: ${description}</p></body></html>`,
+          );
+          clearTimeout(timer);
+          server.close();
+          reject(new Error(`Authorization error: ${error} ${description}`));
+          return;
+        }
+
+        if (!code || !state || state !== expectedState) {
+          logError("Missing or invalid state/code on callback");
+          res.statusCode = 400;
+          res.end("Missing or invalid state/code");
+          clearTimeout(timer);
+          server.close();
+          reject(new Error("Missing or invalid state/code on callback"));
+          return;
+        }
+
+        res.statusCode = 200;
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.end(
-          `<html><body><h1>Authorization failed</h1><p>${error}: ${description}</p></body></html>`,
+          "<html><body><h1>Xero authorization complete</h1>" +
+            "<p>You can close this tab and return to your terminal.</p></body></html>",
         );
         clearTimeout(timer);
         server.close();
-        reject(new Error(`Authorization error: ${error} ${description}`));
-        return;
-      }
-
-      if (!code || !state || state !== expectedState) {
-        logError("Missing or invalid state/code on callback");
-        res.statusCode = 400;
-        res.end("Missing or invalid state/code");
-        clearTimeout(timer);
-        server.close();
-        reject(new Error("Missing or invalid state/code on callback"));
-        return;
-      }
-
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.end(
-        "<html><body><h1>Xero authorization complete</h1>" +
-          "<p>You can close this tab and return to your terminal.</p></body></html>",
-      );
-      clearTimeout(timer);
-      server.close();
-      resolve({ url });
-    });
+        resolve({ url });
+      },
+    );
 
     server.on("error", (err) => {
       clearTimeout(timer);
@@ -291,7 +299,7 @@ function waitForCallback(
 
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address() as AddressInfo;
-      logDebug(`Local listener bound to 127.0.0.1:${addr.port}`);
+      logDebug(`Local listener bound to 127.0.0.1:${addr.port} (TLS)`);
     });
   });
 }
@@ -300,12 +308,14 @@ export class PkceXeroClient extends MCPXeroClient {
   private readonly clientId: string;
   private readonly clientSecret: string;
   private readonly scopes: string;
-  private readonly tokenFilePath: string;
+  private readonly tokenStoreMode?: string;
+  private readonly tokenFilePath?: string;
   private readonly redirectUriOverride?: string;
   private readonly portStart: number;
 
   private oidcConfig?: oidc.Configuration;
   private tokens?: PersistedTokens;
+  private tokenStore?: TokenStore;
   private inFlight?: Promise<void>;
 
   constructor(config: {
@@ -313,6 +323,7 @@ export class PkceXeroClient extends MCPXeroClient {
     clientSecret: string;
     scopes?: string;
     tokenFilePath?: string;
+    tokenStoreMode?: string;
     redirectUri?: string;
     portStart?: number;
   }) {
@@ -320,13 +331,15 @@ export class PkceXeroClient extends MCPXeroClient {
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
     this.scopes = config.scopes ?? DEFAULT_SCOPES;
-    this.tokenFilePath = config.tokenFilePath ?? defaultTokenPath();
+    this.tokenStoreMode = config.tokenStoreMode;
+    this.tokenFilePath = config.tokenFilePath;
     this.redirectUriOverride = config.redirectUri;
     this.portStart = config.portStart ?? DEFAULT_PORT_START;
     logDebug(
       `PkceXeroClient constructed. ` +
         `clientId=${this.clientId.slice(0, 6)}... ` +
-        `tokenFile=${this.tokenFilePath} ` +
+        `tokenStoreMode=${this.tokenStoreMode ?? "auto"} ` +
+        `tokenFilePath=${this.tokenFilePath ?? "(default)"} ` +
         `portStart=${this.portStart} ` +
         `portRange=${this.portStart}-${this.portStart + PORT_RANGE - 1} ` +
         `redirectUriOverride=${this.redirectUriOverride ?? "none"} ` +
@@ -343,6 +356,50 @@ export class PkceXeroClient extends MCPXeroClient {
     return this.inFlight;
   }
 
+  /**
+   * Wipe persisted and in-memory auth state, then run a fresh interactive
+   * PKCE login. Resolves once the new token set has been issued and the
+   * tenant list refreshed.
+   */
+  public async forceReauthenticate(): Promise<void> {
+    if (this.inFlight) {
+      try {
+        await this.inFlight;
+      } catch {
+        /* prior auth attempt errored — proceed with re-auth anyway */
+      }
+    }
+
+    const store = await this.ensureTokenStore();
+
+    this.tokens = undefined;
+    this.clearActiveTenant();
+
+    try {
+      await store.delete();
+      logInfo(`Cleared persisted tokens from ${store.describe()}`);
+    } catch (err) {
+      logWarn(
+        `Failed to clear persisted tokens (continuing with re-auth): ${ensureError(err).message}`,
+      );
+    }
+
+    await this.authenticate();
+  }
+
+  private async ensureTokenStore(): Promise<TokenStore> {
+    if (!this.tokenStore) {
+      this.tokenStore = await selectTokenStore({
+        storeMode: this.tokenStoreMode,
+        filePath: this.tokenFilePath,
+        keychainAccount: this.clientId,
+        log: tokenStoreLogger,
+      });
+      logInfo(`Token store: ${this.tokenStore.describe()}`);
+    }
+    return this.tokenStore;
+  }
+
   private async doAuthenticate(): Promise<void> {
     logDebug("authenticate() called");
     try {
@@ -352,8 +409,10 @@ export class PkceXeroClient extends MCPXeroClient {
       throw err;
     }
 
+    const store = await this.ensureTokenStore();
+
     if (!this.tokens) {
-      this.tokens = await this.loadTokens();
+      this.tokens = await store.load();
     }
 
     if (this.tokens && !this.isAccessTokenValid(this.tokens)) {
@@ -361,7 +420,7 @@ export class PkceXeroClient extends MCPXeroClient {
         try {
           logInfo("Refreshing expired access token");
           this.tokens = await this.refresh(this.tokens.refresh_token);
-          await this.saveTokens(this.tokens);
+          await store.save(this.tokens);
           logInfo("Token refresh succeeded");
         } catch (err) {
           logError("Refresh failed; falling back to interactive login", err);
@@ -376,8 +435,8 @@ export class PkceXeroClient extends MCPXeroClient {
     if (!this.tokens) {
       try {
         this.tokens = await this.runInteractiveLogin();
-        await this.saveTokens(this.tokens);
-        logInfo(`Tokens persisted to ${this.tokenFilePath}`);
+        await store.save(this.tokens);
+        logInfo(`Tokens persisted to ${store.describe()}`);
       } catch (err) {
         logError("Interactive login failed", err);
         throw err;
@@ -485,7 +544,19 @@ export class PkceXeroClient extends MCPXeroClient {
       port = Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 80);
     } else {
       port = await findOpenPort(this.portStart, PORT_RANGE);
-      redirectUri = `http://localhost:${port}${CALLBACK_PATH}`;
+      redirectUri = `https://localhost:${port}${CALLBACK_PATH}`;
+    }
+
+    const tls = await ensureLocalhostTLS({
+      info: logInfo,
+      warn: logWarn,
+    });
+    if (!tls.trusted) {
+      logWarn(
+        `Using ${tls.source} TLS cert at ${tls.certPath}. ` +
+          "Browser will warn 'connection is not private' until you click through. " +
+          "Install mkcert and run 'mkcert -install' to remove the warning.",
+      );
     }
 
     const codeVerifier = oidc.randomPKCECodeVerifier();
@@ -506,7 +577,7 @@ export class PkceXeroClient extends MCPXeroClient {
         `If a browser does not open, visit: ${authUrl.toString()}`,
     );
 
-    const callbackPromise = waitForCallback(port, state);
+    const callbackPromise = waitForCallback(port, state, tls);
     openBrowser(authUrl.toString());
     const { url: callbackUrl } = await callbackPromise;
 
@@ -539,46 +610,5 @@ export class PkceXeroClient extends MCPXeroClient {
     );
 
     return this.tokenResponseToPersisted(response);
-  }
-
-  private async loadTokens(): Promise<PersistedTokens | undefined> {
-    try {
-      const raw = await fs.readFile(this.tokenFilePath, "utf8");
-      const parsed = JSON.parse(raw) as PersistedTokens;
-      if (!parsed.access_token) {
-        logWarn(
-          `Token file ${this.tokenFilePath} present but missing access_token`,
-        );
-        return undefined;
-      }
-      logDebug(
-        `Loaded tokens from ${this.tokenFilePath} ` +
-          `(expires_at=${parsed.expires_at ?? "unset"}, ` +
-          `refresh_token=${parsed.refresh_token ? "present" : "absent"})`,
-      );
-      return parsed;
-    } catch (err) {
-      const e = err as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") {
-        logDebug(
-          `No token file at ${this.tokenFilePath}; will run interactive login`,
-        );
-        return undefined;
-      }
-      logError(`Failed to read token file ${this.tokenFilePath}`, err);
-      return undefined;
-    }
-  }
-
-  private async saveTokens(tokens: PersistedTokens): Promise<void> {
-    await fs.mkdir(dirname(this.tokenFilePath), { recursive: true });
-    const tmp = `${this.tokenFilePath}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(tokens, null, 2), { mode: 0o600 });
-    await fs.rename(tmp, this.tokenFilePath);
-    try {
-      await fs.chmod(this.tokenFilePath, 0o600);
-    } catch {
-      /* best-effort on platforms without chmod semantics */
-    }
   }
 }

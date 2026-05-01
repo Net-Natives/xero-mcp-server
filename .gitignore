@@ -40,6 +40,13 @@ bower_components
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 
+# MCPB packaging output
+build/
+*.mcpb
+
+# MCPB local credential override (must never be committed — contains secrets)
+manifest.local.json
+
 # Dependency directories
 node_modules/
 jspm_packages/

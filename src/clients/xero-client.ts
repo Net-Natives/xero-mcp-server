@@ -129,7 +129,10 @@ class CustomConnectionsXeroClient extends MCPXeroClient {
     );
 
     if (connectionsResponse.data && connectionsResponse.data.length > 0) {
-      this.tenantId = connectionsResponse.data[0].tenantId;
+      this.tenantId = this.resolveActiveTenantId(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        connectionsResponse.data.map((c: any) => c.tenantId),
+      );
     }
 
     return response.data;
@@ -179,6 +182,7 @@ export const xeroClient: MCPXeroClient = bearer_token
         clientSecret: client_secret!,
         scopes: process.env.XERO_SCOPES,
         tokenFilePath: process.env.XERO_TOKEN_FILE,
+        tokenStoreMode: process.env.XERO_TOKEN_STORE,
         redirectUri: process.env.XERO_REDIRECT_URI,
         portStart: port_start,
       })

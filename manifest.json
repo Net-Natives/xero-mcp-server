@@ -1,0 +1,55 @@
+{
+  "manifest_version": "0.2",
+  "name": "xero-mcp-server",
+  "display_name": "Xero",
+  "version": "0.0.15",
+  "description": "Xero accounting integration over MCP with PKCE auth, multi-organisation support, and macOS Keychain credential storage.",
+  "long_description": "Provides MCP tools for Xero: list/create/update/delete invoices, contacts, items, bills, manual journals, payroll timesheets, tracking categories, and more. Reads accounts, payments, tax rates, balance sheet, P&L, trial balance, aged receivables/payables. Switch between Xero organisations the OAuth grant has access to via the list-organisations and set-active-organisation tools. Re-authenticate at any time with the re-authenticate tool. Tokens are stored in the macOS Keychain by default; HTTPS callback uses mkcert (if installed) or a self-signed cert.",
+  "author": {
+    "name": "Xero",
+    "url": "https://xero.com"
+  },
+  "homepage": "https://github.com/XeroAPI/xero-mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/XeroAPI/xero-mcp-server.git"
+  },
+  "license": "MIT",
+  "keywords": ["xero", "accounting", "invoices", "payroll", "oauth", "pkce"],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "XERO_AUTH_MODE": "pkce",
+        "XERO_CLIENT_ID": "${user_config.client_id}",
+        "XERO_CLIENT_SECRET": "${user_config.client_secret}"
+      }
+    }
+  },
+  "user_config": {
+    "client_id": {
+      "type": "string",
+      "title": "Xero Client ID",
+      "description": "OAuth 2.0 Client ID from your Xero developer app (https://developer.xero.com/app/manage). The app must have https://localhost:8765/callback registered as a redirect URI.",
+      "required": true,
+      "sensitive": false
+    },
+    "client_secret": {
+      "type": "string",
+      "title": "Xero Client Secret",
+      "description": "OAuth 2.0 Client Secret from your Xero developer app.",
+      "required": true,
+      "sensitive": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

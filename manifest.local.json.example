@@ -1,0 +1,6 @@
+{
+  "env": {
+    "XERO_CLIENT_ID": "your-xero-client-id",
+    "XERO_CLIENT_SECRET": "your-xero-client-secret"
+  }
+}
