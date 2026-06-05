@@ -1,4 +1,4 @@
-import { Employee } from "xero-node/dist/gen/model/payroll-nz/employee.js";
+import { Employee } from "../../types/payroll-nz-types.js";
 import { listXeroPayrollEmployees } from "../../handlers/list-xero-payroll-employees.handler.js";
 import { CreateXeroTool } from "../../helpers/create-xero-tool.js";
 

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { listXeroPayrollEmployeeLeaveTypes } from "../../handlers/list-xero-payroll-employee-leave-types.handler.js";
 import { CreateXeroTool } from "../../helpers/create-xero-tool.js";
-import { EmployeeLeaveType } from "xero-node/dist/gen/model/payroll-nz/employeeLeaveType.js";
+import { EmployeeLeaveType } from "../../types/payroll-nz-types.js";
 
 const ListPayrollEmployeeLeaveTypesTool = CreateXeroTool(
   "list-payroll-employee-leave-types",
@@ -37,8 +37,11 @@ const ListPayrollEmployeeLeaveTypesTool = CreateXeroTool(
           text: [
             `Leave Type ID: ${leaveType.leaveTypeID || "Unknown"}`,
             `Schedule of Accrual: ${leaveType.scheduleOfAccrual || "Unknown"}`,
-            leaveType.hoursAccruedAnnually
-              ? `Hours Accrued Annually: ${leaveType.hoursAccruedAnnually}`
+            leaveType.typeOfUnitsToAccrue
+              ? `Type of Units: ${leaveType.typeOfUnitsToAccrue}`
+              : null,
+            leaveType.unitsAccruedAnnually
+              ? `Units Accrued Annually: ${leaveType.unitsAccruedAnnually}`
               : null,
             leaveType.maximumToAccrue
               ? `Maximum To Accrue: ${leaveType.maximumToAccrue}`
@@ -48,9 +51,6 @@ const ListPayrollEmployeeLeaveTypesTool = CreateXeroTool(
               : null,
             leaveType.rateAccruedHourly
               ? `Rate Accrued Hourly: ${leaveType.rateAccruedHourly}`
-              : null,
-            leaveType.leaveTypeID
-              ? `Leave Type ID: ${leaveType.leaveTypeID}`
               : null,
             leaveType.scheduleOfAccrualDate
               ? `Accrual Date: ${leaveType.scheduleOfAccrualDate}`

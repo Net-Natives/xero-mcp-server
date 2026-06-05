@@ -2,7 +2,7 @@ import { xeroClient } from "../clients/xero-client.js";
 import { XeroClientResponse } from "../types/tool-response.js";
 import { formatError } from "../helpers/format-error.js";
 import { getClientHeaders } from "../helpers/get-client-headers.js";
-import { EmployeeLeaveBalance } from "xero-node/dist/gen/model/payroll-nz/employeeLeaveBalance.js";
+import { EmployeeLeaveBalance } from "../types/payroll-nz-types.js";
 
 /**
  * Internal function to fetch employee leave balances from Xero

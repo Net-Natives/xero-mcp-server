@@ -1,7 +1,7 @@
 import { xeroClient } from "../clients/xero-client.js";
 import { XeroClientResponse } from "../types/tool-response.js";
 import { formatError } from "../helpers/format-error.js";
-import { LeavePeriod } from "xero-node/dist/gen/model/payroll-nz/leavePeriod.js";
+import { LeavePeriod } from "../types/payroll-nz-types.js";
 
 interface FetchLeavePeriodParams {
   employeeId?: string;
