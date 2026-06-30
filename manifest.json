@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "xero-mcp-server",
   "display_name": "Xero",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "description": "Xero accounting integration over MCP with PKCE auth, multi-organisation support, and macOS Keychain credential storage.",
   "long_description": "Provides MCP tools for Xero: list/create/update/delete invoices, contacts, items, bills, manual journals, payroll timesheets, tracking categories, and more. Reads accounts, payments, tax rates, balance sheet, P&L, trial balance, aged receivables/payables. Switch between Xero organisations the OAuth grant has access to via the list-organisations and set-active-organisation tools. Re-authenticate at any time with the re-authenticate tool. Tokens are stored in the macOS Keychain by default; HTTPS callback uses mkcert (if installed) or a self-signed cert.",
   "author": {
